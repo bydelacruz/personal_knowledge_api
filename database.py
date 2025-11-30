@@ -4,6 +4,8 @@ A simple note-taking repository using SQLite.
 
 import sqlite3
 
+from models import NoteEntry
+
 
 class NoteRepository:
     """
@@ -31,47 +33,47 @@ class NoteRepository:
                 CREATE TABLE IF NOT EXISTS notes (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 topic TEXT,
+                tags TEXT,
                 rating INTEGER
                 )
             """)
             conn.commit()
 
-    def add_note(self, topic: str, rating: int):
+    def add_note(self, note: NoteEntry):
         """
         Adds a new note to the database.
         """
         with self.connect() as conn:
             cursor = conn.cursor()
+            tags_string = ",".join(note.tags)
             cursor.execute(
-                "INSERT INTO notes (topic, rating) VALUES(?,?)", (topic, rating)
+                "INSERT INTO notes (topic, tags, rating) VALUES(?,?,?)",
+                (note.topic, tags_string, note.rating),
             )
             conn.commit()
 
-    def get_all_notes(self) -> list[tuple]:
+    def get_all_notes(self) -> list[NoteEntry]:
         """
         Retrieves all notes from the database.
         """
         with self.connect() as conn:
             cursor = conn.cursor()
             cursor.execute("SELECT * FROM notes")
-            notes = cursor.fetchall()
+            rows = cursor.fetchall()
 
-            return notes
+            results = []
+            for row in rows:
+                new_entry = self._row_to_entry(row)
+                results.append(new_entry)
 
+            return results
 
-if __name__ == "__main__":
-    # 1. Initialize the DB
-    repo = NoteRepository()
+    def _row_to_entry(self, row) -> NoteEntry:
+        """
+        Converts a database row to a NoteEntry object.
+        """
+        row_id, topic, tags_string, rating = row
 
-    # 2. Add some data
-    print("Adding notes...")
-    repo.add_note("Python Generators", 9)
-    repo.add_note("SQL Injections", 10)
-    repo.add_note("Bad Topic", 2)
+        tags_list = tags_string.split(",") if tags_string else []
 
-    # 3. Read it back
-    print("Fetching notes...")
-    all_notes = repo.get_all_notes()
-
-    for note in all_notes:
-        print(note)
+        return NoteEntry(id=row_id, topic=topic, tags=tags_list, rating=rating)
