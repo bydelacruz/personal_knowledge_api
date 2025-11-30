@@ -39,7 +39,7 @@ class NoteRepository:
             """)
             conn.commit()
 
-    def add_note(self, note: NoteEntry):
+    def add_note(self, note: NoteEntry) -> int:
         """
         Adds a new note to the database.
         """
@@ -51,6 +51,8 @@ class NoteRepository:
                 (note.topic, tags_string, note.rating),
             )
             conn.commit()
+
+            return cursor.lastrowid
 
     def get_all_notes(self) -> list[NoteEntry]:
         """
