@@ -8,9 +8,7 @@ class KnowledgeEntry:
     rating: int
 
     def is_high_priority(self) -> bool:
-        if self.rating >= 8:
-            return True
-        return False
+        return self.rating >= 8
 
 
 if __name__ == "__main__":
