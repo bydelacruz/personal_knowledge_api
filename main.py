@@ -1,13 +1,24 @@
+"""
+main entry point for notes application
+"""
+
 from dataclasses import dataclass
 
 
 @dataclass
 class KnowledgeEntry:
+    """
+    Represents a knowledge entry with topic, tags, and rating.
+    """
+
     topic: str
     tags: list[str]
     rating: int
 
     def is_high_priority(self) -> bool:
+        """
+        Determines if the knowledge entry is high priority based on its rating.
+        """
         return self.rating >= 8
 
 
