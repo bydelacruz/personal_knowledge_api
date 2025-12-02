@@ -2,6 +2,8 @@
 API layer for managing note entries using FastAPI.
 """
 
+from contextlib import asynccontextmanager
+
 from fastapi import Depends, FastAPI
 from pydantic import BaseModel
 
@@ -29,8 +31,23 @@ class NoteResponse(BaseModel):
     is_high_priority: bool  # We will compute this on the fly
 
 
+# --- LIFESPAN MANAGER (the startup script) ---
+# This runs BEFORE the app starts receiving requests.
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """
+    Lifespan manager to handle startup tasks.
+    """
+    # Startup logic: ensure the database and tables are created
+    repo = NoteRepository()
+    await repo.create_table()
+    print("Startup: Database table checked/created.")
+    yield  # The app runs here
+
+
 # --- 2. THE APP SETUP ---
-app = FastAPI(title="Personal Knowledge API", version="1.0.0")
+# We pass the lifespan manager to FastAPI
+app = FastAPI(title="Personal Knowledge API", version="1.0.0", lifespan=lifespan)
 
 # --- 3. DEPENDENCY INJECTION (The wizardry) ---
 # Instead of creating a new repository manually in every function,
@@ -50,7 +67,7 @@ def get_repository():
 
 
 @app.post("/notes", response_model=NoteResponse, status_code=201)
-def create_note(
+async def create_note(
     payload: NoteCreatePayload, repo: NoteRepository = Depends(get_repository)
 ):
     """
@@ -64,7 +81,7 @@ def create_note(
     new_entry = NoteEntry(topic=payload.topic, tags=payload.tags, rating=payload.rating)
 
     # Save to DB
-    created_id = repo.add_note(new_entry)
+    created_id = await repo.add_note(new_entry)
 
     return NoteResponse(
         id=created_id,
@@ -76,13 +93,13 @@ def create_note(
 
 
 @app.get("/notes", response_model=list[NoteResponse])
-def get_notes(repo: NoteRepository = Depends(get_repository)):
+async def get_notes(repo: NoteRepository = Depends(get_repository)):
     """
     Fetches all notes.
     FastAPI automatically handles the conversion from our NoteEntry objects
     to the NoteResponse JSON format.
     """
-    domain_objects = repo.get_all_notes()
+    domain_objects = await repo.get_all_notes()
 
     # We map our internal onjects to the API response format
     results = []
@@ -101,7 +118,7 @@ def get_notes(repo: NoteRepository = Depends(get_repository)):
 
 # health check (Always good practice)
 @app.get("/health")
-def health_check():
+async def health_check():
     """
     Simple health check endpoint.
     """

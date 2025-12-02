@@ -2,7 +2,7 @@
 A simple note-taking repository using SQLite.
 """
 
-import sqlite3
+import aiosqlite
 
 from models import NoteEntry
 
@@ -15,21 +15,13 @@ class NoteRepository:
 
     def __init__(self, filename: str = "notes.db"):
         self.db_name = filename
-        self.create_table()
 
-    def connect(self):
-        """
-        Establishes a connection to the SQLite database.
-        """
-        return sqlite3.connect(self.db_name)
-
-    def create_table(self):
+    async def create_table(self):
         """
         Creates the notes table if it does not exist.
         """
-        with self.connect() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
+        async with aiosqlite.connect(self.db_name) as db:
+            await db.execute("""
                 CREATE TABLE IF NOT EXISTS notes (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 topic TEXT,
@@ -37,36 +29,32 @@ class NoteRepository:
                 rating INTEGER
                 )
             """)
-            conn.commit()
+            await db.commit()
 
-    def add_note(self, note: NoteEntry) -> int:
+    async def add_note(self, note: NoteEntry) -> int:
         """
         Adds a new note to the database.
         """
-        with self.connect() as conn:
-            cursor = conn.cursor()
+        async with aiosqlite.connect(self.db_name) as db:
             tags_string = ",".join(note.tags)
-            cursor.execute(
+            cursor = await db.execute(
                 "INSERT INTO notes (topic, tags, rating) VALUES(?,?,?)",
                 (note.topic, tags_string, note.rating),
             )
-            conn.commit()
-
+            await db.commit()
             return cursor.lastrowid
 
-    def get_all_notes(self) -> list[NoteEntry]:
+    async def get_all_notes(self) -> list[NoteEntry]:
         """
         Retrieves all notes from the database.
         """
-        with self.connect() as conn:
-            cursor = conn.cursor()
-            cursor.execute("SELECT * FROM notes")
-            rows = cursor.fetchall()
+        async with aiosqlite.connect(self.db_name) as db:
+            async with db.execute("SELECT * FROM notes") as cursor:
+                rows = await cursor.fetchall()
 
             results = []
             for row in rows:
-                new_entry = self._row_to_entry(row)
-                results.append(new_entry)
+                results.append(self._row_to_entry(row))
 
             return results
 
@@ -75,7 +63,6 @@ class NoteRepository:
         Converts a database row to a NoteEntry object.
         """
         row_id, topic, tags_string, rating = row
-
         tags_list = tags_string.split(",") if tags_string else []
 
         return NoteEntry(id=row_id, topic=topic, tags=tags_list, rating=rating)
