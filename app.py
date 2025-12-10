@@ -67,9 +67,9 @@ with st.sidebar:
                         if res.status_code == 200:
                             data = res.json()
                             st.success(
-                                f"Success! Split into {
-                                    data['chunks_processed']
-                                } chunks."
+                                f"""Success! Split into {
+                                    data["chunks_processed"]
+                                } chunks."""
                             )
 
                             # RESET SESSION STATE
