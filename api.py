@@ -101,8 +101,12 @@ async def lifespan(app: FastAPI):
     chroma_client = chromadb.PersistentClient(path=f"{BASE_DIR}/my_vector_db")
     note_collection = chroma_client.get_or_create_collection(name="my_notes")
 
-    print("Startup: Loading Reranker (this takes a moment)...")
-    reranker_model = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2")
+    if IS_RENDER:
+        print("Startup: Running in Cloud Mode. Reranker disabled to save RAM.")
+        reranker_model = None
+    else:
+        print("Startup: Loading Reranker (this takes a moment)...")
+        reranker_model = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2")
 
     # 3. CHECK FOR EMPTY DB & SEED IT
     # If the database is empty (which happens on Render Free Tier restart),
@@ -363,13 +367,26 @@ async def search_notes(query: str, repo: NoteRepository = Depends(get_repository
 @app.post("/ask", response_model=ChatResponse)
 async def ask_question(request: ChatRequest):
     # 1. RETRIEVAL
-    candidate_ids = run_hybrid_search(request.question, n_results=20)
+    # On render, we just take the top 5 directly from hybrid search
+    # On  local, we take 20 and then rerank them down to 5
+    initial_count = 5 if IS_RENDER else 20
+    candidate_ids = run_hybrid_search(request.question, n_results=initial_count)
 
     if not candidate_ids:
         return ChatResponse(answer="I don't have information on that.", sources=[])
 
-    # 2. RERANKING
-    top_docs = rerank_documents(request.question, candidate_ids, top_k=5)
+    # 2. RERANKING (conditional)
+    if reranker_model:
+        # local mode: use the smart brain
+        top_docs = rerank_documents(request.question, candidate_ids, top_k=5)
+    else:
+        # cloud mode: jusr fetch the text for the top 5 candidates directly
+        # We trust that hybrid search did a 'good enough' job
+        top_docs = []
+        for doc_id_str in candidate_ids:
+            doc_id = int(doc_id_str)
+            if doc_id in bm25_text_map:
+                top_docs.append(bm25_text_map[doc_id])
 
     if not top_docs:
         return ChatResponse(answer="I found notes, but none seem relevant.", sources=[])
