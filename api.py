@@ -34,7 +34,7 @@ bm25_text_map = {}
 # --- CUSTOM GEMINI EMBEDDING FUNCTION ---
 # This is the secret sauce. It runs on Google's servers, not your RAM.
 class GeminiEmbeddingFunction(embedding_functions.EmbeddingFunction):
-    def __call__(self, input: list[str]) -> List[List[float]]:
+    def __call__(self, input: list[str]) -> list[list[float]]:
         if not GEMINI_API_KEY:
             return []
         genai.configure(api_key=GEMINI_API_KEY)
@@ -79,7 +79,7 @@ async def lifespan(app: FastAPI):
 
     note_collection = chroma_client.get_or_create_collection(
         name="my_notes",
-        embedding_function=gemini_ef,  # <--- CRITICAL CHANGE
+        embedding_function=gemini_ef,
     )
 
     # 3. SEED DATA
