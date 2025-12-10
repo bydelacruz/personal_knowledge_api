@@ -66,6 +66,9 @@ SEED_DATA = [
 # --- LIFESPAN MANAGER ---
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # 0. Setup Directories
+    os.makedirs("uploads", exist_ok=True)  # creates 'uploads' if missing
+
     # 1. Setup DB
     repo = NoteRepository(f"{BASE_DIR}/notes.db")
     await repo.create_table()
