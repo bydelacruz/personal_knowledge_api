@@ -11,6 +11,7 @@ import ollama
 from fastapi import Depends, FastAPI, File, UploadFile
 from pydantic import BaseModel
 from rank_bm25 import BM25Okapi
+from sentence_transformers import CrossEncoder
 
 # import internal logic
 from database import NoteRepository
@@ -59,6 +60,7 @@ chroma_client = None
 note_collection = None
 bm25_index: BM25Okapi = None
 bm25_text_map: dict[int, str] = {}  # Maps SQLite ID to the raw text chunk
+reranker_model = None
 
 
 # --- LIFESPAN MANAGER (the startup script) ---
@@ -93,6 +95,12 @@ async def lifespan(app: FastAPI):
     bm25_text_map = {note.id: note.topic for note in all_notes}
 
     print(f"Startup: Keyword index built with {len(all_notes)} documents.")
+
+    # Load Reranker
+    global reranker_model
+    print("Startup: Loading Reranker Model (Cross-Encoder)...")
+    reranker_model = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2")
+    print("Startup: Reranker ready.")
 
     yield  # The app runs here
 
@@ -143,6 +151,49 @@ def run_hybrid_search(query: str, n_results: int = 10) -> list[str]:
     combined_ids = list(set(bm25_results + chroma_ids))
 
     return combined_ids
+
+
+# Helper function that reranks documents
+def rerank_documents(query: str, candidate_ids: list[str], top_k: int = 5) -> list[str]:
+    """
+    1. Fetches text for candidate IDs.
+    2. Pairs them with the query.
+    3. Scores them using the Cross-Encoder.
+    4. Returns the top_k best text chunks.
+    """
+    # 1. Fetch Text
+    # We use the bm25_text_map because it's a fast ID->Text lookup
+    candidates_text = []
+    valid_ids = []
+
+    for doc_id_str in candidate_ids:
+        doc_id = int(doc_id_str)
+        if doc_id in bm25_text_map:
+            text = bm25_text_map[doc_id]
+            candidates_text.append(text)
+            valid_ids.append(doc_id)
+
+    if not candidates_text:
+        return []
+
+    # 2. Prepare Pairs for the Model
+    # Format: [[Query, Doc1], [Query, Doc2], ...]
+    pairs = [[query, doc] for doc in candidates_text]
+
+    # 3. Score
+    scores = reranker_model.predict(pairs)
+
+    # 4. Sort and Filter
+    # We zip the scores with the text so we keep them together
+    scored_results = list(zip(scores, candidates_text))
+
+    # Sort by score (descending)
+    scored_results.sort(key=lambda x: x[0], reverse=True)
+
+    # Return just the text of the top k winners
+    top_results = [text for score, text in scored_results[:top_k]]
+
+    return top_results
 
 
 # --- 2. THE APP SETUP ---
@@ -278,28 +329,28 @@ async def search_notes(query: str, repo: NoteRepository = Depends(get_repository
 # --- 🚀 THE RAG ENDPOINT (THE GRAND FINALE) ---
 @app.post("/ask", response_model=ChatResponse)
 async def ask_question(request: ChatRequest):
-    # 1. RETRIEVAL (Get the context using hybrid search)
-    retrieved_ids = run_hybrid_search(request.question, n_results=5)
+    # 1. RETRIEVAL (Broad Phase)
+    # Get 20 candidates using Hybrid Search (BM25 + Chroma)
+    # We cast the net WIDE to ensure the answer is in there somewhere.
+    retrieved_ids = run_hybrid_search(request.question, n_results=20)
 
-    # Get the raw text content for the LLM
-    context_docs = []
-    sources = []
-    for doc_id_str in retrieved_ids:
-        doc_id = int(doc_id_str)
-        # use our bm25 map (which contains all data) to get the original text
-        if doc_id in bm25_text_map:
-            context_docs.append(bm25_text_map[doc_id])
-            sources.append(bm25_text_map[doc_id])
+    if not retrieved_ids:
+        return ChatResponse(answer="I don't have information on that.", sources=[])
+
+    # 2. RERANKING (Precision Phase)
+    # The Cross-Encoder reads the 20 candidates and picks the best 5.
+    top_docs = rerank_documents(request.question, retrieved_ids, top_k=5)
 
     # If we found nothing, be honest.
-    if not context_docs:
+    if not top_docs:
         return ChatResponse(
-            answer="I don't have any notes about that in my database.", sources=[]
+            answer="I found notes, but none seem relevent to your specific question.",
+            sources=[],
         )
 
-    # 2. AUGMENTATION (Build the Prompt)
+    # 3. AUGMENTATION (Build the Prompt)
     # We smash the retrieved notes into a single string
-    context_text = "\n".join(context_docs)
+    context_text = "\n".join(top_docs)
 
     # The System Prompt instructs the LLM how to behave
     system_prompt = f"""
@@ -322,7 +373,7 @@ async def ask_question(request: ChatRequest):
     # Extract the actual text answer
     final_answer = response["message"]["content"]
 
-    return ChatResponse(answer=final_answer, sources=context_docs)
+    return ChatResponse(answer=final_answer, sources=top_docs)
 
 
 # --- THE INGESTION ENDPOINT ---
