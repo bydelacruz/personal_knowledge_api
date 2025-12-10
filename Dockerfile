@@ -20,12 +20,10 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Now we copy api.py, models.py, database.py into the container
 COPY . .
 
-# 6. Expose the port
-# Inform Docker that the app listens on port 8000.
-EXPOSE 8000
+# 6. make entry point executable
+RUN chmod +x entrypoint.sh
 
 # 7. The Launch Command
 # This runs when the container starts.
-# host 0.0.0.0 is CRITICAL. It lets the container talk to the ouside world.
-CMD ["uvicorn", "api:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["./entrypoint.sh"]
 

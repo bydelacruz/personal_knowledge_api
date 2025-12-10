@@ -6,7 +6,7 @@ import requests
 import streamlit as st
 
 # Point to FastAPI backend
-API_URL = "http://127.0.0.1:8000"
+API_URL = "http://localhost:8000"
 
 st.set_page_config(page_title="Personal Knowledge Brain", layout="wide")
 st.title("🧠 Personal Knowledge Brain")
