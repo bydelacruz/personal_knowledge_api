@@ -7,7 +7,7 @@ import shutil  # for saving files
 from contextlib import asynccontextmanager
 
 import chromadb
-import ollama
+import google.generativeai as genai
 from fastapi import Depends, FastAPI, File, UploadFile
 from pydantic import BaseModel
 from rank_bm25 import BM25Okapi
@@ -54,6 +54,11 @@ class ChatResponse(BaseModel):
     sources: list[str]  # Transparency: Show user where we found the info
 
 
+# --- CONFIGURATION ---
+IS_RENDER = os.environ.get("RENDER", False)
+BASE_DIR = "/var/data" if IS_RENDER else "."
+
+
 # --- GLOBAL VARIABLES ---
 # we need to hold the chroma client in memory so we don't reload it every request.
 chroma_client = None
@@ -63,49 +68,78 @@ bm25_text_map: dict[int, str] = {}  # Maps SQLite ID to the raw text chunk
 reranker_model = None
 
 
-# --- LIFESPAN MANAGER (the startup script) ---
-# This runs BEFORE the app starts receiving requests.
+# --- SEED DATA ---
+# This ensures portfolio is NEVER empty
+SEED_DATA = [
+    {
+        "topic": "About Ben: Ben is a Backend Engineer who specializes in Python, FastAPI, and AI integration.",
+        "tags": ["bio", "portfolio"],
+        "rating": 10,
+    },
+    {
+        "topic": "Ben's Tech Stack: He uses Python 3.11, Docker, AWS, and RAG architectures.",
+        "tags": ["skills", "portfolio"],
+        "rating": 9,
+    },
+    {
+        "topic": "Ben's Goal: To build scalable, intelligent systems that solve real-world problems.",
+        "tags": ["goals", "portfolio"],
+        "rating": 8,
+    },
+]
+
+
+# --- LIFESPAN MANAGER ---
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """
-    Lifespan manager to handle startup tasks.
-    """
-    # 1. Setup SQLite
-    # Startup logic: ensure the database and tables are created
-    repo = NoteRepository()
+    # 1. Setup DB
+    repo = NoteRepository(f"{BASE_DIR}/notes.db")
     await repo.create_table()
 
-    # 2. Setup ChromaDB (the AI index)
-    global chroma_client, note_collection, bm25_index, bm25_text_map
-    chroma_client = chromadb.PersistentClient(path="./chroma_vector_db")
+    # 2. Setup AI Components
+    global chroma_client, note_collection, bm25_index, bm25_text_map, reranker_model
+    chroma_client = chromadb.PersistentClient(path=f"{BASE_DIR}/my_vector_db")
     note_collection = chroma_client.get_or_create_collection(name="my_notes")
-    print("Startup: Database and AI Vector Index ready.")
 
-    print("Startup: Building BM25 keyword index...")
-    all_notes = await repo.get_all_notes()
-
-    corpus = [note.topic for note in all_notes]
-
-    # Map raw text to its SQLite ID for easy retrieval
-    # Note: BM25 expects tokenized text (list of words), so we tokenize the corpus
-    tokenized_corpus = [doc.split(" ") for doc in corpus]
-    bm25_index = BM25Okapi(tokenized_corpus)
-
-    # Create the ID map (SQLite ID -> raw text)
-    bm25_text_map = {note.id: note.topic for note in all_notes}
-
-    print(f"Startup: Keyword index built with {len(all_notes)} documents.")
-
-    # Load Reranker
-    global reranker_model
-    print("Startup: Loading Reranker Model (Cross-Encoder)...")
+    print("Startup: Loading Reranker (this takes a moment)...")
     reranker_model = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2")
-    print("Startup: Reranker ready.")
 
-    yield  # The app runs here
+    # 3. CHECK FOR EMPTY DB & SEED IT
+    # If the database is empty (which happens on Render Free Tier restart),
+    # we auto-populate it so the recruiter sees something cool immediately.
+    existing_notes = await repo.get_all_notes()
+    if not existing_notes:
+        print("Startup: Database empty. Seeding default portfolio data...")
+        for note_data in SEED_DATA:
+            new_entry = NoteEntry(
+                topic=note_data["topic"],
+                tags=note_data["tags"],
+                rating=note_data["rating"],
+            )
+            created_id = await repo.add_note(new_entry)
+            note_collection.add(
+                documents=[note_data["topic"]],
+                metadatas=[{"rating": note_data["rating"]}],
+                ids=[str(created_id)],
+            )
+        # Re-fetch for BM25
+        existing_notes = await repo.get_all_notes()
 
-    # Shutdown logic (if any) goes here
-    print("Shutdown: Cleaning up resources.")
+    # 4. Build BM25
+    print("Startup: Building Keyword Index...")
+    corpus = [note.topic for note in existing_notes]
+    if corpus:
+        tokenized_corpus = [doc.split(" ") for doc in corpus]
+        bm25_index = BM25Okapi(tokenized_corpus)
+        bm25_text_map = {note.id: note.topic for note in existing_notes}
+    else:
+        # Handle empty case just in case
+        bm25_index = None
+        bm25_text_map = {}
+
+    print("Startup: System Ready.")
+    yield
+    print("Shutdown: Cleanup complete.")
 
 
 # helper function for updating the BM25 index
@@ -200,12 +234,11 @@ def rerank_documents(query: str, candidate_ids: list[str], top_k: int = 5) -> li
 # We pass the lifespan manager to FastAPI
 app = FastAPI(title="Personal Knowledge API", version="1.0.0", lifespan=lifespan)
 
-# --- 3. DEPENDENCY INJECTION (The wizardry) ---
+
+# --- 3. DEPENDENCY INJECTION ---
 # Instead of creating a new repository manually in every function,
 # we define this helper. FastAPI will call this, cache the result if needed,
 # and pass it to our routes. This makes testing infinitely easier later.
-
-
 def get_repository():
     """
     Dependency injector for NoteRepository.
@@ -326,56 +359,55 @@ async def search_notes(query: str, repo: NoteRepository = Depends(get_repository
     return found_notes
 
 
-# --- 🚀 THE RAG ENDPOINT (THE GRAND FINALE) ---
+# --- 🚀 THE GEMINI RAG ENDPOINT ---
 @app.post("/ask", response_model=ChatResponse)
 async def ask_question(request: ChatRequest):
-    # 1. RETRIEVAL (Broad Phase)
-    # Get 20 candidates using Hybrid Search (BM25 + Chroma)
-    # We cast the net WIDE to ensure the answer is in there somewhere.
-    retrieved_ids = run_hybrid_search(request.question, n_results=20)
+    # 1. RETRIEVAL
+    candidate_ids = run_hybrid_search(request.question, n_results=20)
 
-    if not retrieved_ids:
+    if not candidate_ids:
         return ChatResponse(answer="I don't have information on that.", sources=[])
 
-    # 2. RERANKING (Precision Phase)
-    # The Cross-Encoder reads the 20 candidates and picks the best 5.
-    top_docs = rerank_documents(request.question, retrieved_ids, top_k=5)
+    # 2. RERANKING
+    top_docs = rerank_documents(request.question, candidate_ids, top_k=5)
 
-    # If we found nothing, be honest.
     if not top_docs:
-        return ChatResponse(
-            answer="I found notes, but none seem relevent to your specific question.",
-            sources=[],
-        )
+        return ChatResponse(answer="I found notes, but none seem relevant.", sources=[])
 
-    # 3. AUGMENTATION (Build the Prompt)
-    # We smash the retrieved notes into a single string
+    # 3. GENERATION (Gemini Swap)
     context_text = "\n".join(top_docs)
 
-    # The System Prompt instructs the LLM how to behave
-    system_prompt = f"""
-    You are a helpful assistant. Answer the user's question based ONLY on the following context.
-    If the answer is not in the context, say "I don't know."
-    Context:
-    {context_text}
-    """
+    # Check for API Key
+    api_key = os.environ.get("GEMINI_API_KEY")
 
-    # 3. GENERATION (Call Ollama)
-    print("Thinking...")
-    response = ollama.chat(
-        model="llama3.2",
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": request.question},
-        ],
-    )
+    if api_key:
+        try:
+            # Configure Gemini
+            genai.configure(api_key=api_key)
+            model = genai.GenerativeModel("gemini-1.5-flash")  # Fast & Free
 
-    # Extract the actual text answer
-    final_answer = response["message"]["content"]
+            prompt = f"""
+            You are a helpful assistant. Answer the user's question based ONLY on the following context.
+            If the answer is not in the context, say "I don't know."
+
+            Context:
+            {context_text}
+
+            User Question: {request.question}
+            """
+
+            response = model.generate_content(prompt)
+            final_answer = response.text
+
+        except Exception as e:
+            final_answer = f"Error calling Gemini: {str(e)}"
+    else:
+        final_answer = "Error: GEMINI_API_KEY not set on server."
 
     return ChatResponse(answer=final_answer, sources=top_docs)
 
 
+@app.post("/ask", response_model=ChatResponse)
 # --- THE INGESTION ENDPOINT ---
 @app.post("/upload-pdf")
 async def upload_pdf(
@@ -446,4 +478,5 @@ async def health_check():
     """
     Simple health check endpoint.
     """
+    return {"status": "operational", "db_connected": True}
     return {"status": "operational", "db_connected": True}
