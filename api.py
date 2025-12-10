@@ -270,13 +270,38 @@ async def ask_question(request: ChatRequest):
         try:
             genai.configure(api_key=GEMINI_API_KEY)
             model = genai.GenerativeModel("gemini-flash-latest")
-            prompt = f"""Context:\n{context_text}\n\nQuestion: {
-                request.question
-            }\nAnswer based on context only:"""
+
+            prompt = f"""
+            You are a helpful assistant. Answer the user's question based ONLY on the following context.
+
+            RULES:
+            1. If the answer is not in the context, return the exact string "I don't know".
+            2. Do NOT return an empty string.
+            3. Do NOT make up information.
+
+            Context:
+            {context_text}
+
+            User Question: {request.question}
+            """
+
             response = model.generate_content(prompt)
-            final_answer = response.text
+
+            # Check if the response actually has text parts
+            if response.parts:
+                final_answer = response.text
+            else:
+                # If finish_reason is 1 (STOP) but no text, it's a Ghost Response.
+                # We return a fallback instead of crashing.
+                print(
+                    f"""Ghost Response detected. Finish Reason: {
+                        response.candidates[0].finish_reason
+                    }"""
+                )
+                final_answer = "The AI thought about it but decided to stay silent. (Internal API ERROR: Empty Response). Please try asking again."
+
         except Exception as e:
-            final_answer = f"Error: {str(e)}"
+            final_answer = f"AI Error: {str(e)}"
     else:
         final_answer = "Error: API Key missing."
 
