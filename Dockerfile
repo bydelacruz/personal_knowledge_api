@@ -1,6 +1,6 @@
 # 1. The Base Layer
 # we start with an official Python image. "Slim" means it's stripped of junk.
-FROM python:3.14-slim
+FROM python:3.11-slim
 
 # 2. Setup the work Directory
 # This is like 'cd /app' inside the container.
