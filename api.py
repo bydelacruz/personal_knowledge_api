@@ -21,7 +21,7 @@ from models import NoteEntry
 
 # --- CONFIGURATION ---
 IS_RENDER = os.environ.get("RENDER", False)
-BASE_DIR = "/var/data" if IS_RENDER else "."
+BASE_DIR = "."
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
 # --- GLOBAL VARIABLES ---
