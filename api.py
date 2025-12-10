@@ -266,7 +266,7 @@ async def ask_question(request: ChatRequest):
     if GEMINI_API_KEY:
         try:
             genai.configure(api_key=GEMINI_API_KEY)
-            model = genai.GenerativeModel("gemini-1.5-flash")
+            model = genai.GenerativeModel("gemini-2.0-flash")
             prompt = f"""Context:\n{context_text}\n\nQuestion: {
                 request.question
             }\nAnswer based on context only:"""
