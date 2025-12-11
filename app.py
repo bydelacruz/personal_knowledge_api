@@ -6,8 +6,6 @@ import requests
 import streamlit as st
 
 # Point to the Backend API
-# If running locally with Docker/Render: use localhost
-# If running purely local (no Docker): use http://127.0.0.1:8000
 API_URL = "http://localhost:8000"
 
 st.set_page_config(page_title="Knowledge Base", layout="wide")
@@ -15,73 +13,71 @@ st.set_page_config(page_title="Knowledge Base", layout="wide")
 st.title("🧠 Knowledge Base")
 st.markdown("Ask questions about your notes, PDFs, and data.")
 
+# --- HELPER FUNCTIONS ---
+# We define these functions to handle the logic BEFORE the page reloads.
+
+
+def save_note():
+    # 1. Get data from Session State
+    payload = {
+        "topic": st.session_state.note_topic,
+        "rating": st.session_state.note_rating,
+        "tags": [t.strip() for t in st.session_state.note_tags.split(",")],
+    }
+
+    try:
+        res = requests.post(f"{API_URL}/notes", json=payload)
+        if res.status_code == 201:
+            st.toast("✅ Note saved successfully!")
+            # 2. CLEAR STATE (This happens before the widgets are drawn again)
+            st.session_state.note_topic = ""
+            st.session_state.note_rating = 5
+            st.session_state.note_tags = "general"
+        else:
+            st.error(f"Error: {res.text}")
+    except Exception as e:
+        st.error(f"Connection Failed: {e}")
+
+
+def process_pdf():
+    uploaded_file = st.session_state.pdf_uploader
+    if uploaded_file is None:
+        return
+
+    files = {"file": (uploaded_file.name, uploaded_file, "application/pdf")}
+    try:
+        res = requests.post(f"{API_URL}/upload-pdf", files=files)
+        if res.status_code == 200:
+            data = res.json()
+            st.toast(f"✅ PDF Processed! {data['chunks_processed']} chunks added.")
+            # CLEAR STATE
+            st.session_state.pdf_uploader = None
+        else:
+            st.error(f"Error: {res.text}")
+    except Exception as e:
+        st.error(f"Upload Failed: {e}")
+
+
 # --- SIDEBAR: ADD DATA ---
 with st.sidebar:
     st.header("Add Knowledge")
 
     # Tab 1: Manual Note
-    # We assign a key to the expander state could be tricky,
-    # but st.rerun() usually resets expanders to default (closed).
     with st.expander("📝 Add Text Note"):
-        # 1. ADD KEYS to every input so we can wipe them later
-        topic = st.text_input("Topic/Content", key="note_topic")
-        rating = st.slider("Importance Rating", 1, 10, 5, key="note_rating")
-        tags = st.text_input("Tags (comma separated)", "general", key="note_tags")
+        # We bind the widgets to session state keys
+        st.text_input("Topic/Content", key="note_topic")
+        st.slider("Importance Rating", 1, 10, 5, key="note_rating")
+        st.text_input("Tags (comma separated)", "general", key="note_tags")
 
-        if st.button("Save Note"):
-            payload = {
-                "topic": topic,
-                "rating": rating,
-                "tags": [t.strip() for t in tags.split(",")],
-            }
-            try:
-                res = requests.post(f"{API_URL}/notes", json=payload)
-                if res.status_code == 201:
-                    st.success("Note saved!")
-
-                    # 2. RESET SESSION STATE
-                    st.session_state.note_topic = ""  # Clear text
-                    st.session_state.note_rating = 5  # Reset slider
-                    st.session_state.note_tags = "general"  # Reset tags
-
-                    # 3. RERUN APP (Refreshes UI and closes expander)
-                    st.rerun()
-                else:
-                    st.error(f"Error: {res.text}")
-            except Exception as e:
-                st.error(f"Connection Failed: {e}")
+        # WE CALL THE FUNCTION IN 'on_click'
+        st.button("Save Note", on_click=save_note)
 
     # Tab 2: PDF Upload
     with st.expander("📂 Upload PDF"):
-        # ADD KEY to file uploader
-        uploaded_file = st.file_uploader("Choose a PDF", type="pdf", key="pdf_uploader")
+        st.file_uploader("Choose a PDF", type="pdf", key="pdf_uploader")
 
-        if uploaded_file is not None:
-            if st.button("Process PDF"):
-                with st.spinner("Ingesting and Chunking..."):
-                    files = {
-                        "file": (uploaded_file.name, uploaded_file, "application/pdf")
-                    }
-                    try:
-                        res = requests.post(f"{API_URL}/upload-pdf", files=files)
-                        if res.status_code == 200:
-                            data = res.json()
-                            st.success(
-                                f"""Success! Split into {
-                                    data["chunks_processed"]
-                                } chunks."""
-                            )
-
-                            # RESET SESSION STATE
-                            # Setting file_uploader key to None clears it
-                            st.session_state.pdf_uploader = None
-
-                            # RERUN APP
-                            st.rerun()
-                        else:
-                            st.error(f"Error: {res.text}")
-                    except Exception as e:
-                        st.error(f"Upload Failed: {e}")
+        # WE CALL THE FUNCTION IN 'on_click'
+        st.button("Process PDF", on_click=process_pdf)
 
 # --- MAIN AREA: CHAT INTERFACE ---
 
