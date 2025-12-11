@@ -13,12 +13,20 @@ st.set_page_config(page_title="Knowledge Base", layout="wide")
 st.title("🧠 Knowledge Base")
 st.markdown("Ask questions about your notes, PDFs, and data.")
 
+# --- INITIALIZE SESSION STATE ---
+# We do this ONCE to avoid "default value" warnings.
+if "init" not in st.session_state:
+    st.session_state.init = True
+    st.session_state.note_topic = ""
+    st.session_state.note_rating = 5
+    st.session_state.note_tags = "general"
+    st.session_state.uploader_key = 0  # Unique ID to force-reset file uploader
+    st.session_state.messages = []
+
 # --- HELPER FUNCTIONS ---
-# We define these functions to handle the logic BEFORE the page reloads.
 
 
 def save_note():
-    # 1. Get data from Session State
     payload = {
         "topic": st.session_state.note_topic,
         "rating": st.session_state.note_rating,
@@ -29,7 +37,7 @@ def save_note():
         res = requests.post(f"{API_URL}/notes", json=payload)
         if res.status_code == 201:
             st.toast("✅ Note saved successfully!")
-            # 2. CLEAR STATE (This happens before the widgets are drawn again)
+            # Reset values
             st.session_state.note_topic = ""
             st.session_state.note_rating = 5
             st.session_state.note_tags = "general"
@@ -40,7 +48,14 @@ def save_note():
 
 
 def process_pdf():
-    uploaded_file = st.session_state.pdf_uploader
+    # We construct the dynamic key based on the counter
+    current_key = f"pdf_uploader_{st.session_state.uploader_key}"
+
+    if current_key not in st.session_state:
+        return
+
+    uploaded_file = st.session_state[current_key]
+
     if uploaded_file is None:
         return
 
@@ -50,8 +65,10 @@ def process_pdf():
         if res.status_code == 200:
             data = res.json()
             st.toast(f"✅ PDF Processed! {data['chunks_processed']} chunks added.")
-            # CLEAR STATE
-            st.session_state.pdf_uploader = None
+
+            # Increment the key ID.
+            # This forces Streamlit to create a BRAND NEW uploader on the next refresh.
+            st.session_state.uploader_key += 1
         else:
             st.error(f"Error: {res.text}")
     except Exception as e:
@@ -64,25 +81,27 @@ with st.sidebar:
 
     # Tab 1: Manual Note
     with st.expander("📝 Add Text Note"):
-        # We bind the widgets to session state keys
+        # Notice we removed 'value=' because we initialized state at the top.
         st.text_input("Topic/Content", key="note_topic")
-        st.slider("Importance Rating", 1, 10, 5, key="note_rating")
-        st.text_input("Tags (comma separated)", "general", key="note_tags")
+        st.slider("Importance Rating", 1, 10, key="note_rating")
+        st.text_input("Tags (comma separated)", key="note_tags")
 
-        # WE CALL THE FUNCTION IN 'on_click'
         st.button("Save Note", on_click=save_note)
 
     # Tab 2: PDF Upload
     with st.expander("📂 Upload PDF"):
-        st.file_uploader("Choose a PDF", type="pdf", key="pdf_uploader")
+        # DYNAMIC KEY: "pdf_uploader_0", then "pdf_uploader_1", etc.
+        unique_key = f"pdf_uploader_{st.session_state.uploader_key}"
 
-        # WE CALL THE FUNCTION IN 'on_click'
+        st.file_uploader(
+            "Choose a PDF",
+            type="pdf",
+            key=unique_key,  # <--- The Magic
+        )
+
         st.button("Process PDF", on_click=process_pdf)
 
 # --- MAIN AREA: CHAT INTERFACE ---
-
-if "messages" not in st.session_state:
-    st.session_state.messages = []
 
 for message in st.session_state.messages:
     with st.chat_message(message["role"]):
