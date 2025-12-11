@@ -10,4 +10,3 @@ google-generativeai
 chromadb>=0.4.15
 rank_bm25
 pypdf
-python-magic

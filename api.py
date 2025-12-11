@@ -8,7 +8,6 @@ from contextlib import asynccontextmanager
 
 import chromadb
 import google.generativeai as genai
-import magic
 from chromadb.utils import embedding_functions  # <--- NEW
 from fastapi import Depends, FastAPI, File, HTTPException, UploadFile
 from pydantic import BaseModel
@@ -189,18 +188,7 @@ async def create_note(
 async def upload_pdf(
     file: UploadFile = File(...), repo: NoteRepository = Depends(get_repository)
 ):
-    # 1. Read first 1KB to check file type
-    header = await file.read(1024)
-    await file.seek(0)  # Reset cursor
-
-    # Check if it looks like a PDF
-    mime = magic.from_buffer(header, mime=True)
-    if mime != "application/pdf":
-        raise HTTPException(
-            status_code=400, detail="Invalid file type. Only real PDFs allowed."
-        )
-
-    # 2. check File Size (Prevent 10GB bombs)
+    # 1. check File Size (Prevent 10GB bombs)
     # 10MB limit
     if file.size > 10 * 1024 * 1024:
         raise HTTPException(status_code=400, detail="File too large. Max 10MB.")
