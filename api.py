@@ -9,10 +9,10 @@ from datetime import datetime, timedelta
 
 import chromadb
 import google.generativeai as genai
-import jwt
 from chromadb.utils import embedding_functions
 from fastapi import Depends, FastAPI, File, HTTPException, UploadFile, status
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
+from jose import JWTError, jwt
 from passlib.context import CryptContext
 from pydantic import BaseModel
 from rank_bm25 import BM25Okapi
@@ -84,7 +84,7 @@ async def get_current_user(token: str = Depends(oauth2_scheme)):
         username: str = payload.get("sub")
         if username is None:
             raise credentials_exception
-    except jwt.JWTError:
+    except JWTError:
         raise credentials_exception
     return username
 
