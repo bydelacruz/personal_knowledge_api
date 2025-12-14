@@ -53,7 +53,6 @@ def register_user(username, password):
 def logout():
     st.session_state.token = None
     st.session_state.user = None
-    st.rerun()
 
 
 # --- THE GATEKEEPER ---
