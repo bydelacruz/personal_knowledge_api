@@ -10,5 +10,5 @@ google-generativeai
 chromadb>=0.4.15
 rank_bm25
 pypdf
-passlib[bcrypt]
+bcrypt
 python-jose[cryptography]

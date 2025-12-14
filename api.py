@@ -8,13 +8,13 @@ import shutil
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 
+import bcrypt
 import chromadb
 import google.generativeai as genai
 from chromadb.utils import embedding_functions
 from fastapi import Depends, FastAPI, File, HTTPException, UploadFile, status
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from jose import JWTError, jwt
-from passlib.context import CryptContext
 from pydantic import BaseModel
 from rank_bm25 import BM25Okapi
 
@@ -39,10 +39,7 @@ bm25_index = None
 bm25_text_map = {}
 
 # --- SECURITY SETUP ---
-# 1. Password Hasher
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
-
-# 2. The Token Extractor
+# 1. The Token Extractor
 # This tells FastAPI: "Look for a token at the URL /token"
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
 
@@ -58,13 +55,20 @@ def pre_hash_password(password: str) -> str:
 def verify_password(plain_password, hashed_password):
     # We must pre-hash the plain password to match how it was stored
     safe_password = pre_hash_password(plain_password)
-    return pwd_context.verify(safe_password, hashed_password)
+
+    # check with bcrypt
+    # bcrypt.checkpw requires BYTES, so we .encode() everything
+    return bcrypt.checkpw(safe_password.encode(), hashed_password.encode())
 
 
 def get_password_hash(password):
     # Pre-hash before sending to Bcrypt
     safe_password = pre_hash_password(password)
-    return pwd_context.hash(safe_password)
+
+    # hash with bcrypt
+    # gensalt() generates a random salt every time
+    # .decode() converts the resulting bytes back to a string for the Database
+    return bcrypt.hashpw(safe_password.encode(), bcrypt.gensalt()).decode()
 
 
 def create_access_token(data: dict, expires_delta: timedelta | None = None):
