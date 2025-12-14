@@ -5,17 +5,19 @@ API layer for managing note entries using FastAPI.
 import os
 import shutil
 from contextlib import asynccontextmanager
+from datetime import datetime, timedelta
 
 import chromadb
 import google.generativeai as genai
-from chromadb.utils import embedding_functions  # <--- NEW
-from fastapi import Depends, FastAPI, File, HTTPException, UploadFile
+import jwt
+from chromadb.utils import embedding_functions
+from fastapi import Depends, FastAPI, File, HTTPException, UploadFile, status
+from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
+from passlib.context import CryptContext
 from pydantic import BaseModel
 from rank_bm25 import BM25Okapi
 
 from database import NoteRepository
-
-# Import ingestion logic
 from ingestion import chunk_text, extract_text_from_pdf
 from models import NoteEntry
 
@@ -24,15 +26,73 @@ IS_RENDER = os.environ.get("RENDER", False)
 BASE_DIR = "."
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
+# SECURITY CONFIG
+SECRET_KEY = os.environ.get("SECRET_KEY")
+ALGORITHM = "HS256"
+ACCESS_TOKEN_EXPIRE_MINUTES = 30
+
 # --- GLOBAL VARIABLES ---
 chroma_client = None
 note_collection = None
 bm25_index = None
 bm25_text_map = {}
 
+# --- SECURITY SETUP ---
+# 1. Password Hasher
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+# 2. The Token Extractor
+# This tells FastAPI: "Look for a token at the URL /token"
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
+
+# --- HELPER FUNCTIONS ---
+
+
+def verify_password(plain_password, hashed_password):
+    return pwd_context.verify(plain_password, hashed_password)
+
+
+def get_password_hash(password):
+    return pwd_context.hash(password)
+
+
+def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
+    to_encode = data.copy()
+    if expires_delta:
+        expire = datetime.utcnow() + expires_delta
+    else:
+        expire = datetime.utcnow() + timedelta(minutes=15)
+
+    # We add the "exp" (expiration) claim to the token
+    to_encode.update({"exp": expire})
+
+    # We SIGN the token using our SECRET_KEY
+    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+    return encoded_jwt
+
+
+async def get_current_user(token: str = Depends(oauth2_scheme)):
+    # This function runs automatically on protected routes
+    credentials_exception = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Could not validate credentials",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+    try:
+        # Decode the token
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        username: str = payload.get("sub")
+        if username is None:
+            raise credentials_exception
+    except jwt.JWTError:
+        raise credentials_exception
+    return username
+
 
 # --- CUSTOM GEMINI EMBEDDING FUNCTION ---
 # This is the secret sauce. It runs on Google's servers, not your RAM.
+
+
 class GeminiEmbeddingFunction(embedding_functions.EmbeddingFunction):
     def __call__(self, input: list[str]) -> list[list[float]]:
         if not GEMINI_API_KEY:
@@ -48,21 +108,6 @@ class GeminiEmbeddingFunction(embedding_functions.EmbeddingFunction):
         return embeddings
 
 
-# --- SEED DATA ---
-SEED_DATA = [
-    {
-        "topic": "About Ben: Ben is a Backend Engineer who specializes in Python, FastAPI, and AI integration.",
-        "tags": ["bio", "portfolio"],
-        "rating": 10,
-    },
-    {
-        "topic": "Ben's Tech Stack: He uses Python 3.11, Docker, AWS, and RAG architectures.",
-        "tags": ["skills", "portfolio"],
-        "rating": 9,
-    },
-]
-
-
 # --- LIFESPAN MANAGER ---
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -76,44 +121,20 @@ async def lifespan(app: FastAPI):
     # 2. Setup Chroma with Google's Brain (Not Local RAM)
     global chroma_client, note_collection, bm25_index, bm25_text_map
     chroma_client = chromadb.PersistentClient(path=f"{BASE_DIR}/my_vector_db")
-
     # We explicitly tell Chroma to use our custom function
     gemini_ef = GeminiEmbeddingFunction()
-
     note_collection = chroma_client.get_or_create_collection(
         name="my_notes",
         embedding_function=gemini_ef,
     )
 
-    # 3. SEED DATA
+    # 3. Rebuid Index
     existing_notes = await repo.get_all_notes()
-    if not existing_notes:
-        print("Startup: Seeding database...")
-        for note_data in SEED_DATA:
-            new_entry = NoteEntry(
-                topic=note_data["topic"],
-                tags=note_data["tags"],
-                rating=note_data["rating"],
-            )
-            created_id = await repo.add_note(new_entry)
-
-            # Chroma now calls Google API to get vectors. No RAM used!
-            note_collection.add(
-                documents=[note_data["topic"]],
-                metadatas=[{"rating": note_data["rating"]}],
-                ids=[str(created_id)],
-            )
-        existing_notes = await repo.get_all_notes()
-
-    # 4. Build BM25
-    corpus = [note.topic for note in existing_notes]
-    if corpus:
+    if existing_notes:
+        corpus = [note.topic for note in existing_notes]
         tokenized_corpus = [doc.split(" ") for doc in corpus]
         bm25_index = BM25Okapi(tokenized_corpus)
         bm25_text_map = {note.id: note.topic for note in existing_notes}
-    else:
-        bm25_index = None
-        bm25_text_map = {}
 
     print("Startup: System Ready.")
     yield
@@ -151,12 +172,65 @@ class ChatResponse(BaseModel):
     sources: list[str]
 
 
+class UserCreate(BaseModel):
+    username: str
+    password: str
+
+
+class Token(BaseModel):
+    access_token: str
+    token_type: str
+
+
 # --- ROUTES ---
+# 1. Register
+
+
+@app.post("/register", status_code=201)
+async def register(user: UserCreate, repo: NoteRepository = Depends(get_repository)):
+    # Hash the password before saving!
+    hashed_password = get_password_hash(user.password)
+    success = await repo.create_user(user.username, hashed_password)
+    if not success:
+        raise HTTPException(status_code=400, detail="Username already registered")
+    return {"message": "User created successfully"}
+
+
+# 2. LOGIN
+# OAuth2PasswordRequestForm is a special class that expects 'username' and 'password' form fields
+
+
+@app.post("/token", response_model=Token)
+async def login_for_access_token(
+    form_data: OAuth2PasswordRequestForm = Depends(),
+    repo: NoteRepository = Depends(get_repository),
+):
+    # Fetch user from DB
+    user_row = await repo.get_user_by_username(form_data.username)
+    if not user_row:
+        raise HTTPException(status_code=401, detail="Incorrect username or password")
+
+    # Verify Hash
+    if not verify_password(form_data.password, user_row["password_hash"]):
+        raise HTTPException(status_code=401, detail="Incorrect username or password")
+
+    # Create JWT
+    access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    access_token = create_access_token(
+        data={"sub": user_row["username"]}, expires_delta=access_token_expires
+    )
+    return {"access_token": access_token, "token_type": "bearer"}
+
+
+# We add 'current_user: str = Depends(get_current_user)' to every route
+# that we want to protect
 
 
 @app.post("/notes", response_model=NoteResponse, status_code=201)
 async def create_note(
-    payload: NoteCreatePayload, repo: NoteRepository = Depends(get_repository)
+    payload: NoteCreatePayload,
+    repo: NoteRepository = Depends(get_repository),
+    current_user: str = Depends(get_current_user),
 ):
     new_entry = NoteEntry(topic=payload.topic, tags=payload.tags, rating=payload.rating)
     created_id = await repo.add_note(new_entry)
@@ -186,7 +260,9 @@ async def create_note(
 
 @app.post("/upload-pdf")
 async def upload_pdf(
-    file: UploadFile = File(...), repo: NoteRepository = Depends(get_repository)
+    file: UploadFile = File(...),
+    repo: NoteRepository = Depends(get_repository),
+    current_user: str = Depends(get_current_user),
 ):
     # 1. check File Size (Prevent 10GB bombs)
     # 10MB limit
@@ -234,7 +310,9 @@ async def upload_pdf(
 
 
 @app.post("/ask", response_model=ChatResponse)
-async def ask_question(request: ChatRequest):
+async def ask_question(
+    request: ChatRequest, current_user: str = Depends(get_current_user)
+):
     # 1. RETRIEVAL (Hybrid: BM25 + Chroma)
     # Chroma now uses Google Vectors to find matches.
 

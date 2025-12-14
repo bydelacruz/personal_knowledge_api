@@ -21,12 +21,23 @@ class NoteRepository:
         Creates the notes table if it does not exist.
         """
         async with aiosqlite.connect(self.db_name) as db:
+            # Table 1: Notes
             await db.execute("""
                 CREATE TABLE IF NOT EXISTS notes (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 topic TEXT,
                 tags TEXT,
                 rating INTEGER
+                )
+            """)
+
+            # Table 2: Users
+            # We store the username and the 'hashed' password
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS users (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    username TEXT UNIQUE NOT NULL,
+                    password_hash TEXT NOT NULL
                 )
             """)
             await db.commit()
@@ -57,6 +68,27 @@ class NoteRepository:
                 results.append(self._row_to_entry(row))
 
             return results
+
+    async def create_user(self, username, password_hash):
+        try:
+            async with aiosqlite.connect(self.db_name) as db:
+                await db.execute(
+                    "INSERT INTO users (username, password_hash) VALUES (?,?)",
+                    (username, password_hash),
+                )
+                await db.commit()
+            return True
+        except aiosqlite.IntegrityError:
+            # This happens if the username already exists (UNIQUE constraint)
+            return False
+
+    async def get_user_by_username(self, username):
+        async with aiosqlite.connect(self.db_name) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(
+                "SELECT * FROM users WHERE username = ?", (username,)
+            )
+            return await cursor.fetchone()
 
     def _row_to_entry(self, row) -> NoteEntry:
         """
