@@ -2,6 +2,7 @@
 API layer for managing note entries using FastAPI.
 """
 
+import hashlib
 import os
 import shutil
 from contextlib import asynccontextmanager
@@ -48,12 +49,22 @@ oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
 # --- HELPER FUNCTIONS ---
 
 
+def pre_hash_password(password: str) -> str:
+    # Turns "MyLongPassword..." into a fixed 64-character hex string
+    # This prevents the 72-byte Bcrypt crash
+    return hashlib.sha256(password.encode()).hexdigest()
+
+
 def verify_password(plain_password, hashed_password):
-    return pwd_context.verify(plain_password, hashed_password)
+    # We must pre-hash the plain password to match how it was stored
+    safe_password = pre_hash_password(plain_password)
+    return pwd_context.verify(safe_password, hashed_password)
 
 
 def get_password_hash(password):
-    return pwd_context.hash(password)
+    # Pre-hash before sending to Bcrypt
+    safe_password = pre_hash_password(password)
+    return pwd_context.hash(safe_password)
 
 
 def create_access_token(data: dict, expires_delta: timedelta | None = None):
