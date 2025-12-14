@@ -199,6 +199,15 @@ class Token(BaseModel):
 
 @app.post("/register", status_code=201)
 async def register(user: UserCreate, repo: NoteRepository = Depends(get_repository)):
+    # --- DEBUG PRINT ---
+    print(f"DEBUG: Attempting to register {user.username}")
+    print(f"DEBUG: Original Password Length: {len(user.password)}")
+
+    # Run the pre-hash manually to prove it works
+    pre_hashed = pre_hash_password(user.password)
+    print(f"DEBUG: Pre-hashed (SHA256) Length: {len(pre_hashed)}")
+    # This MUST say 64. If this print doesn't appear, old code is running.
+
     # Hash the password before saving!
     hashed_password = get_password_hash(user.password)
     success = await repo.create_user(user.username, hashed_password)
