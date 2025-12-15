@@ -144,7 +144,7 @@ async def seed_data(repo: NoteRepository):
 
         # Add to vector DB
         note_collection.add(
-            documents=[demo_note.topic], metadata=[{"rating": 10}], ids=[str(note_id)]
+            documents=[demo_note.topic], metadatas=[{"rating": 10}], ids=[str(note_id)]
         )
 
         # update BM25
