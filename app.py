@@ -63,6 +63,7 @@ if not st.session_state.token:
     tab1, tab2 = st.tabs(["Login", "Register"])
 
     with tab1:
+        st.info("Demo Credentials: username='demo', password='password123'")
         l_user = st.text_input("Username", key="l_user")
         l_pass = st.text_input("Password", type="password", key="l_pass")
         if st.button("Login"):

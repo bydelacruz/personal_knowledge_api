@@ -106,8 +106,6 @@ async def get_current_user(token: str = Depends(oauth2_scheme)):
 
 # --- CUSTOM GEMINI EMBEDDING FUNCTION ---
 # This is the secret sauce. It runs on Google's servers, not your RAM.
-
-
 class GeminiEmbeddingFunction(embedding_functions.EmbeddingFunction):
     def __call__(self, input: list[str]) -> list[list[float]]:
         if not GEMINI_API_KEY:
@@ -121,6 +119,38 @@ class GeminiEmbeddingFunction(embedding_functions.EmbeddingFunction):
             result = genai.embed_content(model=model, content=text)
             embeddings.append(result["embedding"])
         return embeddings
+
+
+# Seed helper function for enabling a demo user account
+async def seed_data(repo: NoteRepository):
+    # 1. Check if Demo User exists
+    existing_user = await repo.get_user_by_username("demo")
+    if not existing_user:
+        print("SEEDING: Creating Demo User...")
+        # Create User
+        hashed_pw = get_password_hash("password123")
+        await repo.create_user("demo", hashed_pw)
+
+        # Create a Sample Note
+        demo_note = NoteEntry(
+            topic="""
+                The Python Global Interpreter Lock (GIL)
+                prevents multiple threads from executing Python bytecodes at once.
+            """,
+            tags=["python", "demo", "concepts"],
+            rating=10,
+        )
+        note_id = await repo.add_note(demo_note)
+
+        # Add to vector DB
+        note_collection.add(
+            documents=[demo_note.topic], metadata=[{"rating": 10}], ids=[str(note_id)]
+        )
+
+        # update BM25
+        global bm25_index, bm25_text_map
+        bm25_text_map[note_id] = demo_note.topic
+        print("SEEDING: complete!")
 
 
 # --- LIFESPAN MANAGER ---
@@ -142,6 +172,10 @@ async def lifespan(app: FastAPI):
         name="my_notes",
         embedding_function=gemini_ef,
     )
+
+    # --- RUN SEED ---
+    await seed_data(repo)
+    # -----------------
 
     # 3. Rebuid Index
     existing_notes = await repo.get_all_notes()
