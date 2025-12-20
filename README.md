@@ -59,7 +59,7 @@ This project implements a **Hybrid Search RAG Pipeline** designed for zero-cost 
 1.  **Clone the Repository**
 
     ```bash
-    git clone [https://github.com/bydelacruz/personal-knowledge-brain.git]
+    git clone [https://github.com/bydelacruz/personal_knowledge_api.git]
     cd personal-knowledge-brain
     ```
 
